@@ -202,24 +202,35 @@ function PinVerifyModal({ isOpen, onClose, onSuccess, title = "Enter PIN" }) {
   const [pin, setPin] = useState('');
   const [error, setError] = useState('');
   const [attempts, setAttempts] = useState(0);
+  const attemptsRef = useRef(attempts);
 
+  // Update ref when attempts change
   useEffect(() => {
-    if (isOpen) {
+    attemptsRef.current = attempts;
+  }, [attempts]);
+
+  // Reset state when modal opens/closes
+  const prevIsOpen = useRef(isOpen);
+  useEffect(() => {
+    if (isOpen && !prevIsOpen.current) {
+      // Modal just opened - reset state
       setPin('');
       setError('');
     }
+    prevIsOpen.current = isOpen;
   }, [isOpen]);
 
-  const handleVerify = () => {
+  const handleVerify = useCallback(() => {
     if (PinService.verifyPin(pin)) {
       setAttempts(0);
       onSuccess();
       onClose();
     } else {
+      const currentAttempts = attemptsRef.current;
       setAttempts(prev => prev + 1);
-      setError(`Incorrect PIN. ${3 - attempts - 1} attempts remaining.`);
+      setError(`Incorrect PIN. ${3 - currentAttempts - 1} attempts remaining.`);
       setPin('');
-      if (attempts >= 2) {
+      if (currentAttempts >= 2) {
         setError('Too many attempts. Please try again later.');
         setTimeout(() => {
           onClose();
@@ -227,13 +238,13 @@ function PinVerifyModal({ isOpen, onClose, onSuccess, title = "Enter PIN" }) {
         }, 2000);
       }
     }
-  };
+  }, [pin, onSuccess, onClose]);
 
   useEffect(() => {
     if (pin.length === 6) {
       handleVerify();
     }
-  }, [pin]);
+  }, [pin, handleVerify]);
 
   if (!isOpen) return null;
 
