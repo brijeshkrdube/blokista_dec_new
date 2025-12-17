@@ -7,10 +7,16 @@ const useWalletStore = create(
       wallets: [],
       currentWalletId: null,
       isLocked: true,
+      isPinSetup: false,
       currentChainId: 639054, // Default to Blokista
       tokens: [],
       nfts: [],
       customRPCs: [],
+      
+      // WalletConnect state
+      wcSessions: [],
+      wcPendingProposal: null,
+      wcPendingRequest: null,
       
       setWallets: (wallets) => set({ 
         wallets, 
@@ -35,6 +41,8 @@ const useWalletStore = create(
       },
       
       setIsLocked: (locked) => set({ isLocked: locked }),
+      
+      setIsPinSetup: (setup) => set({ isPinSetup: setup }),
       
       setCurrentChainId: (chainId) => set({ currentChainId: chainId }),
       
@@ -105,9 +113,26 @@ const useWalletStore = create(
         wallets: [],
         currentWalletId: null,
         isLocked: true, 
+        isPinSetup: false,
         tokens: [],
-        nfts: []
+        nfts: [],
+        wcSessions: [],
       }),
+
+      // WalletConnect actions
+      setWcSessions: (sessions) => set({ wcSessions: sessions }),
+      
+      setWcPendingProposal: (proposal) => set({ wcPendingProposal: proposal }),
+      
+      setWcPendingRequest: (request) => set({ wcPendingRequest: request }),
+      
+      addWcSession: (session) => set((state) => ({
+        wcSessions: [...state.wcSessions.filter(s => s.topic !== session.topic), session]
+      })),
+      
+      removeWcSession: (topic) => set((state) => ({
+        wcSessions: state.wcSessions.filter(s => s.topic !== topic)
+      })),
     }),
     {
       name: 'wallet-storage',
@@ -118,6 +143,8 @@ const useWalletStore = create(
         tokens: state.tokens,
         nfts: state.nfts,
         customRPCs: state.customRPCs,
+        isPinSetup: state.isPinSetup,
+        wcSessions: state.wcSessions,
       }),
     }
   )
