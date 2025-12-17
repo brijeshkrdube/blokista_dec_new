@@ -454,10 +454,12 @@ function CreateWalletScreen() {
   const [confirmed, setConfirmed] = useState(false);
   const [showMnemonic, setShowMnemonic] = useState(false);
 
+  // Generate mnemonic on mount
+  const [mnemonicGenerated] = useState(() => WalletService.generateMnemonic());
+  
   useEffect(() => {
-    const mnemonic = WalletService.generateMnemonic();
-    setMnemonic(mnemonic);
-  }, []);
+    setMnemonic(mnemonicGenerated);
+  }, [mnemonicGenerated]);
 
   const handlePinSetupComplete = () => {
     setStep(1);
