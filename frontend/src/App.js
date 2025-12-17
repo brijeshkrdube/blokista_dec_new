@@ -1903,8 +1903,7 @@ function BrowserScreen() {
     };
 
     initWC();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, []); // Initialize once on mount
 
   const loadSessions = () => {
     const activeSessions = WalletConnectService.getActiveSessions();
