@@ -35,6 +35,18 @@ const webpackConfig = {
       '@': path.resolve(__dirname, 'src'),
     },
     configure: (webpackConfig) => {
+      // Add fallback for node modules needed by ethers.js
+      webpackConfig.resolve.fallback = {
+        ...webpackConfig.resolve.fallback,
+        crypto: false,
+        stream: false,
+        assert: false,
+        http: false,
+        https: false,
+        os: false,
+        url: false,
+        buffer: require.resolve('buffer/'),
+      };
 
       // Disable hot reload completely if environment variable is set
       if (config.disableHotReload) {
