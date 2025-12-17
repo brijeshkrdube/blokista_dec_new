@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, createContext, useContext } from "react";
+import React, { useState, useEffect, useCallback, createContext, useContext, useRef } from "react";
 import { BrowserRouter, Routes, Route, useNavigate, useLocation } from "react-router-dom";
 import { QRCodeSVG } from "qrcode.react";
 import { ethers } from "ethers";
@@ -6,9 +6,12 @@ import useWalletStore from "./store/walletStore";
 import { CHAINS } from "./config/chains";
 import { WalletService } from "./utils/walletService";
 import { PriceService } from "./utils/priceService";
+import { PinService } from "./utils/pinService";
+import { WalletConnectService } from "./utils/walletConnectService";
 import {
   Wallet, Send, ArrowDown, RefreshCw, Copy, ChevronDown, Plus, Settings,
-  Globe, ArrowLeft, Check, Eye, EyeOff, Trash2, QrCode, Image, X, Search, Camera, UserPlus, Users
+  Globe, ArrowLeft, Check, Eye, EyeOff, Trash2, QrCode, Image, X, Search, Camera, UserPlus, Users,
+  Lock, Unlock, Key, Link2, Unlink, Shield, ExternalLink, AlertTriangle
 } from "lucide-react";
 import "./App.css";
 
@@ -58,6 +61,320 @@ function useToast() {
     return { showToast: (msg) => console.log(msg) };
   }
   return context;
+}
+
+// PIN Input Component
+function PinInput({ length = 6, value, onChange, error }) {
+  const inputRefs = useRef([]);
+
+  const handleChange = (index, e) => {
+    const val = e.target.value;
+    if (!/^\d*$/.test(val)) return;
+    
+    const newValue = value.split('');
+    newValue[index] = val.slice(-1);
+    const newPin = newValue.join('');
+    onChange(newPin);
+
+    if (val && index < length - 1) {
+      inputRefs.current[index + 1]?.focus();
+    }
+  };
+
+  const handleKeyDown = (index, e) => {
+    if (e.key === 'Backspace' && !value[index] && index > 0) {
+      inputRefs.current[index - 1]?.focus();
+    }
+  };
+
+  const handlePaste = (e) => {
+    e.preventDefault();
+    const pastedData = e.clipboardData.getData('text').slice(0, length);
+    if (/^\d+$/.test(pastedData)) {
+      onChange(pastedData.padEnd(length, '').slice(0, length));
+    }
+  };
+
+  return (
+    <div className="pin-input-container">
+      {Array.from({ length }).map((_, index) => (
+        <input
+          key={index}
+          ref={(el) => (inputRefs.current[index] = el)}
+          type="password"
+          inputMode="numeric"
+          maxLength={1}
+          value={value[index] || ''}
+          onChange={(e) => handleChange(index, e)}
+          onKeyDown={(e) => handleKeyDown(index, e)}
+          onPaste={handlePaste}
+          className={`pin-input ${error ? 'pin-input-error' : ''}`}
+          data-testid={`pin-input-${index}`}
+        />
+      ))}
+    </div>
+  );
+}
+
+// PIN Setup Screen
+function PinSetupScreen({ onComplete }) {
+  const [step, setStep] = useState(1);
+  const [pin, setPin] = useState('');
+  const [confirmPin, setConfirmPin] = useState('');
+  const [error, setError] = useState('');
+  const { setIsPinSetup } = useWalletStore();
+
+  const handleSetPin = () => {
+    if (pin.length !== 6) {
+      setError('Please enter a 6-digit PIN');
+      return;
+    }
+    setError('');
+    setStep(2);
+  };
+
+  const handleConfirmPin = () => {
+    if (confirmPin !== pin) {
+      setError('PINs do not match. Please try again.');
+      setConfirmPin('');
+      return;
+    }
+    PinService.savePin(pin);
+    setIsPinSetup(true);
+    if (onComplete) onComplete();
+  };
+
+  return (
+    <div className="screen-container" data-testid="pin-setup-screen">
+      <div className="flex flex-col items-center justify-center flex-1 px-6">
+        <div className="w-20 h-20 bg-purple-600 rounded-full flex items-center justify-center mb-6">
+          <Lock className="w-10 h-10 text-white" />
+        </div>
+        
+        {step === 1 ? (
+          <>
+            <h1 className="text-2xl font-bold text-white mb-2">Set Your PIN</h1>
+            <p className="text-gray-400 text-center mb-8">
+              Create a 6-digit PIN to secure your wallet
+            </p>
+            <PinInput value={pin} onChange={setPin} error={!!error} />
+            {error && <p className="text-red-500 text-sm mt-4">{error}</p>}
+            <button
+              className="btn-primary w-full mt-8"
+              onClick={handleSetPin}
+              disabled={pin.length !== 6}
+              data-testid="set-pin-btn"
+            >
+              Continue
+            </button>
+          </>
+        ) : (
+          <>
+            <h1 className="text-2xl font-bold text-white mb-2">Confirm Your PIN</h1>
+            <p className="text-gray-400 text-center mb-8">
+              Re-enter your PIN to confirm
+            </p>
+            <PinInput value={confirmPin} onChange={setConfirmPin} error={!!error} />
+            {error && <p className="text-red-500 text-sm mt-4">{error}</p>}
+            <button
+              className="btn-primary w-full mt-8"
+              onClick={handleConfirmPin}
+              disabled={confirmPin.length !== 6}
+              data-testid="confirm-pin-btn"
+            >
+              Confirm PIN
+            </button>
+            <button
+              className="btn-secondary w-full mt-4"
+              onClick={() => { setStep(1); setPin(''); setConfirmPin(''); setError(''); }}
+            >
+              Go Back
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// PIN Verify Modal
+function PinVerifyModal({ isOpen, onClose, onSuccess, title = "Enter PIN" }) {
+  const [pin, setPin] = useState('');
+  const [error, setError] = useState('');
+  const [attempts, setAttempts] = useState(0);
+
+  useEffect(() => {
+    if (isOpen) {
+      setPin('');
+      setError('');
+    }
+  }, [isOpen]);
+
+  const handleVerify = () => {
+    if (PinService.verifyPin(pin)) {
+      setAttempts(0);
+      onSuccess();
+      onClose();
+    } else {
+      setAttempts(prev => prev + 1);
+      setError(`Incorrect PIN. ${3 - attempts - 1} attempts remaining.`);
+      setPin('');
+      if (attempts >= 2) {
+        setError('Too many attempts. Please try again later.');
+        setTimeout(() => {
+          onClose();
+          setAttempts(0);
+        }, 2000);
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (pin.length === 6) {
+      handleVerify();
+    }
+  }, [pin]);
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="modal-overlay" data-testid="pin-verify-modal">
+      <div className="modal-content">
+        <button className="modal-close" onClick={onClose}>
+          <X className="w-6 h-6" />
+        </button>
+        <div className="flex flex-col items-center py-6">
+          <div className="w-16 h-16 bg-purple-600 rounded-full flex items-center justify-center mb-4">
+            <Shield className="w-8 h-8 text-white" />
+          </div>
+          <h2 className="text-xl font-bold text-white mb-2">{title}</h2>
+          <p className="text-gray-400 text-center mb-6">
+            Enter your 6-digit PIN to continue
+          </p>
+          <PinInput value={pin} onChange={setPin} error={!!error} />
+          {error && <p className="text-red-500 text-sm mt-4">{error}</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Reset PIN Screen
+function ResetPinScreen() {
+  const navigate = useNavigate();
+  const [step, setStep] = useState(1);
+  const [currentPin, setCurrentPin] = useState('');
+  const [newPin, setNewPin] = useState('');
+  const [confirmPin, setConfirmPin] = useState('');
+  const [error, setError] = useState('');
+  const { showToast } = useToast();
+
+  const handleVerifyCurrentPin = () => {
+    if (!PinService.verifyPin(currentPin)) {
+      setError('Incorrect current PIN');
+      setCurrentPin('');
+      return;
+    }
+    setError('');
+    setStep(2);
+  };
+
+  const handleSetNewPin = () => {
+    if (newPin.length !== 6) {
+      setError('Please enter a 6-digit PIN');
+      return;
+    }
+    setError('');
+    setStep(3);
+  };
+
+  const handleConfirmNewPin = () => {
+    if (confirmPin !== newPin) {
+      setError('PINs do not match');
+      setConfirmPin('');
+      return;
+    }
+    PinService.resetPin(newPin);
+    showToast('PIN updated successfully', 'success');
+    navigate(-1);
+  };
+
+  return (
+    <div className="screen-container" data-testid="reset-pin-screen">
+      <div className="header">
+        <button onClick={() => navigate(-1)} className="icon-btn">
+          <ArrowLeft className="w-6 h-6" />
+        </button>
+        <span className="header-title">Reset PIN</span>
+        <div className="w-6" />
+      </div>
+      
+      <div className="flex flex-col items-center justify-center flex-1 px-6">
+        {step === 1 && (
+          <>
+            <div className="w-16 h-16 bg-yellow-600 rounded-full flex items-center justify-center mb-4">
+              <Key className="w-8 h-8 text-white" />
+            </div>
+            <h2 className="text-xl font-bold text-white mb-2">Current PIN</h2>
+            <p className="text-gray-400 text-center mb-6">
+              Enter your current PIN to continue
+            </p>
+            <PinInput value={currentPin} onChange={setCurrentPin} error={!!error} />
+            {error && <p className="text-red-500 text-sm mt-4">{error}</p>}
+            <button
+              className="btn-primary w-full mt-8"
+              onClick={handleVerifyCurrentPin}
+              disabled={currentPin.length !== 6}
+            >
+              Verify
+            </button>
+          </>
+        )}
+
+        {step === 2 && (
+          <>
+            <div className="w-16 h-16 bg-purple-600 rounded-full flex items-center justify-center mb-4">
+              <Lock className="w-8 h-8 text-white" />
+            </div>
+            <h2 className="text-xl font-bold text-white mb-2">New PIN</h2>
+            <p className="text-gray-400 text-center mb-6">
+              Enter your new 6-digit PIN
+            </p>
+            <PinInput value={newPin} onChange={setNewPin} error={!!error} />
+            {error && <p className="text-red-500 text-sm mt-4">{error}</p>}
+            <button
+              className="btn-primary w-full mt-8"
+              onClick={handleSetNewPin}
+              disabled={newPin.length !== 6}
+            >
+              Continue
+            </button>
+          </>
+        )}
+
+        {step === 3 && (
+          <>
+            <div className="w-16 h-16 bg-green-600 rounded-full flex items-center justify-center mb-4">
+              <Check className="w-8 h-8 text-white" />
+            </div>
+            <h2 className="text-xl font-bold text-white mb-2">Confirm New PIN</h2>
+            <p className="text-gray-400 text-center mb-6">
+              Re-enter your new PIN to confirm
+            </p>
+            <PinInput value={confirmPin} onChange={setConfirmPin} error={!!error} />
+            {error && <p className="text-red-500 text-sm mt-4">{error}</p>}
+            <button
+              className="btn-primary w-full mt-8"
+              onClick={handleConfirmNewPin}
+              disabled={confirmPin.length !== 6}
+            >
+              Confirm
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
 }
 
 // Token Logo Component with fallback
@@ -120,8 +437,8 @@ function WelcomeScreen() {
 // Create Wallet Screen
 function CreateWalletScreen() {
   const navigate = useNavigate();
-  const { addWallet } = useWalletStore();
-  const [step, setStep] = useState(1);
+  const { addWallet, isPinSetup } = useWalletStore();
+  const [step, setStep] = useState(isPinSetup ? 1 : 0); // Start with PIN setup if not done
   const [mnemonic, setMnemonic] = useState("");
   const [confirmed, setConfirmed] = useState(false);
   const [showMnemonic, setShowMnemonic] = useState(false);
@@ -131,11 +448,19 @@ function CreateWalletScreen() {
     setMnemonic(mnemonic);
   }, []);
 
+  const handlePinSetupComplete = () => {
+    setStep(1);
+  };
+
   const handleCreate = () => {
     const wallet = WalletService.createWalletFromMnemonic(mnemonic);
     addWallet(wallet);
     navigate("/home");
   };
+
+  if (step === 0) {
+    return <PinSetupScreen onComplete={handlePinSetupComplete} />;
+  }
 
   return (
     <div className="screen-container" data-testid="create-wallet-screen">
@@ -210,10 +535,15 @@ function CreateWalletScreen() {
 // Import Wallet Screen
 function ImportWalletScreen() {
   const navigate = useNavigate();
-  const { addWallet } = useWalletStore();
+  const { addWallet, isPinSetup } = useWalletStore();
+  const [showPinSetup, setShowPinSetup] = useState(!isPinSetup);
   const [importType, setImportType] = useState("mnemonic");
   const [input, setInput] = useState("");
   const [error, setError] = useState("");
+
+  const handlePinSetupComplete = () => {
+    setShowPinSetup(false);
+  };
 
   const handleImport = () => {
     setError("");
@@ -234,6 +564,10 @@ function ImportWalletScreen() {
       setError("Invalid input. Please check and try again.");
     }
   };
+
+  if (showPinSetup) {
+    return <PinSetupScreen onComplete={handlePinSetupComplete} />;
+  }
 
   return (
     <div className="screen-container" data-testid="import-wallet-screen">
@@ -298,7 +632,6 @@ function HomeScreen() {
   const chainTokens = tokens.filter((t) => t.chainId === currentChainId);
   const chainNFTs = nfts.filter((n) => n.chainId === currentChainId);
 
-  // Load data only once when component mounts or chain changes
   useEffect(() => {
     let isMounted = true;
     
@@ -308,18 +641,15 @@ function HomeScreen() {
       setLoading(true);
       
       try {
-        // Load balance
         const bal = await WalletService.getBalance(wallet.address, currentChain.rpcUrl);
         if (isMounted) setBalance(bal);
         
-        // Load price
         const priceData = await PriceService.getPrice(currentChain.chainId, currentChain.symbol);
         if (isMounted && priceData) {
           setNativePrice(priceData.price);
           setPriceChange(priceData.change);
         }
         
-        // Load token balances
         const currentTokens = tokens.filter((t) => t.chainId === currentChainId);
         if (currentTokens.length > 0) {
           const balances = await Promise.all(
@@ -357,7 +687,7 @@ function HomeScreen() {
     return () => {
       isMounted = false;
     };
-  }, [wallet?.address, currentChainId, tokens.length]); // Only depend on stable values
+  }, [wallet?.address, currentChainId, tokens.length]);
 
   const { showToast } = useToast();
 
@@ -392,7 +722,6 @@ function HomeScreen() {
 
   return (
     <div className="screen-container" data-testid="home-screen">
-      {/* Header */}
       <div className="header">
         <button
           className="chain-selector"
@@ -407,7 +736,6 @@ function HomeScreen() {
         </button>
       </div>
 
-      {/* Chain Dropdown */}
       {showChainSelector && (
         <div className="chain-dropdown">
           {CHAINS.map((chain) => (
@@ -427,7 +755,6 @@ function HomeScreen() {
       )}
 
       <div className="content overflow-auto">
-        {/* Wallet Card */}
         <div className="wallet-card">
           <p className="text-gray-400 text-sm mb-1">Total Balance</p>
           {loading ? (
@@ -460,7 +787,6 @@ function HomeScreen() {
           </button>
         </div>
 
-        {/* Action Buttons */}
         <div className="action-buttons">
           <button className="action-btn" onClick={() => navigate("/send")} data-testid="send-btn">
             <div className="action-icon"><Send className="w-6 h-6" /></div>
@@ -476,7 +802,6 @@ function HomeScreen() {
           </button>
         </div>
 
-        {/* Tabs */}
         <div className="flex border-b border-gray-700 mb-4 px-4">
           <button
             className={`flex-1 py-3 text-center ${activeTab === "tokens" ? "text-purple-500 border-b-2 border-purple-500" : "text-gray-400"}`}
@@ -494,7 +819,6 @@ function HomeScreen() {
           </button>
         </div>
 
-        {/* Tokens Tab */}
         {activeTab === "tokens" && (
           <div className="px-4 pb-24">
             <div className="flex justify-between items-center mb-4">
@@ -508,7 +832,6 @@ function HomeScreen() {
               </button>
             </div>
 
-            {/* Native Token */}
             <div className="token-item" data-testid="native-token">
               <TokenLogo symbol={currentChain.symbol} size={40} />
               <div className="flex-1">
@@ -530,7 +853,6 @@ function HomeScreen() {
               </div>
             </div>
 
-            {/* Custom Tokens */}
             {tokenBalances.map((token) => (
               <div key={token.address} className="token-item" data-testid={`token-${token.symbol}`}>
                 <TokenLogo symbol={token.symbol} size={40} />
@@ -551,7 +873,6 @@ function HomeScreen() {
           </div>
         )}
 
-        {/* NFTs Tab */}
         {activeTab === "nfts" && (
           <div className="px-4 pb-24">
             <div className="flex justify-between items-center mb-4">
@@ -600,13 +921,12 @@ function HomeScreen() {
         )}
       </div>
 
-      {/* Bottom Navigation */}
       <BottomNav active="home" />
     </div>
   );
 }
 
-// Add Token Screen - FIXED LAYOUT
+// Add Token Screen
 function AddTokenScreen() {
   const navigate = useNavigate();
   const { currentChainId, addToken } = useWalletStore();
@@ -685,7 +1005,6 @@ function AddTokenScreen() {
           Add any ERC20 token to your wallet on {currentChain.name}
         </p>
 
-        {/* Token Address Input - FIXED LAYOUT */}
         <div className="mb-6">
           <label className="block text-white text-sm font-medium mb-2">Token Contract Address</label>
           <div className="flex gap-2">
@@ -714,7 +1033,6 @@ function AddTokenScreen() {
         {error && <p className="text-red-500 text-sm mb-4" data-testid="error-message">{error}</p>}
         {success && <p className="text-green-500 text-sm mb-4" data-testid="success-message">Token info fetched successfully!</p>}
 
-        {/* Token Symbol - Shows fetched value */}
         <div className="mb-4">
           <label className="block text-white text-sm font-medium mb-2">Token Symbol</label>
           <input
@@ -726,7 +1044,6 @@ function AddTokenScreen() {
           />
         </div>
 
-        {/* Token Name - Shows fetched value */}
         <div className="mb-4">
           <label className="block text-white text-sm font-medium mb-2">Token Name</label>
           <input
@@ -738,7 +1055,6 @@ function AddTokenScreen() {
           />
         </div>
 
-        {/* Decimals - Shows fetched value */}
         <div className="mb-6">
           <label className="block text-white text-sm font-medium mb-2">Decimals</label>
           <input
@@ -764,7 +1080,7 @@ function AddTokenScreen() {
   );
 }
 
-// Add NFT Screen - NEW
+// Add NFT Screen
 function AddNFTScreen() {
   const navigate = useNavigate();
   const { currentChainId, addNFT, getCurrentWallet } = useWalletStore();
@@ -795,7 +1111,6 @@ function AddNFTScreen() {
     try {
       const info = await WalletService.getNFTInfo(contractAddress, tokenId, currentChain.rpcUrl);
       
-      // Check ownership
       if (info.owner && wallet && info.owner.toLowerCase() !== wallet.address.toLowerCase()) {
         setError("Warning: You don't appear to own this NFT");
       }
@@ -906,7 +1221,6 @@ function AddNFTScreen() {
 
         {error && <p className="text-red-500 text-sm mb-4" data-testid="nft-error-message">{error}</p>}
 
-        {/* NFT Preview */}
         {nftInfo && (
           <div className="bg-gray-800 rounded-xl p-4 mb-6" data-testid="nft-preview">
             <div className="flex gap-4">
@@ -1114,7 +1428,7 @@ function ReceiveScreen() {
   );
 }
 
-// QR Scanner Screen - FIXED
+// QR Scanner Screen
 function QRScannerScreen({ onScan, onClose }) {
   const navigate = useNavigate();
   const [manualAddress, setManualAddress] = useState("");
@@ -1227,18 +1541,20 @@ function QRScannerScreen({ onScan, onClose }) {
   );
 }
 
-// Settings Screen with Multi-Wallet Support
+// Settings Screen with PIN Lock
 function SettingsScreen() {
   const navigate = useNavigate();
   const { getCurrentWallet, clearWallet, removeWallet, wallets, setCurrentWallet, currentWalletId } = useWalletStore();
   const wallet = getCurrentWallet();
   const [showPrivateKey, setShowPrivateKey] = useState(false);
   const [showMnemonic, setShowMnemonic] = useState(false);
-  const [showWalletSelector, setShowWalletSelector] = useState(false);
+  const [showPinModal, setShowPinModal] = useState(false);
+  const [pinAction, setPinAction] = useState(null); // 'privateKey' or 'mnemonic'
   const { showToast } = useToast();
 
   const handleLogout = () => {
     if (window.confirm("Are you sure you want to logout? Make sure you have saved your recovery phrase.")) {
+      PinService.clearPin();
       clearWallet();
       navigate("/");
     }
@@ -1256,29 +1572,62 @@ function SettingsScreen() {
 
   const handleSwitchWallet = (walletId) => {
     setCurrentWallet(walletId);
-    setShowWalletSelector(false);
     showToast("Wallet switched", "success");
   };
 
+  const handleViewPrivateKey = () => {
+    if (showPrivateKey) {
+      setShowPrivateKey(false);
+    } else {
+      setPinAction('privateKey');
+      setShowPinModal(true);
+    }
+  };
+
+  const handleViewMnemonic = () => {
+    if (showMnemonic) {
+      setShowMnemonic(false);
+    } else {
+      setPinAction('mnemonic');
+      setShowPinModal(true);
+    }
+  };
+
+  const handlePinSuccess = () => {
+    if (pinAction === 'privateKey') {
+      setShowPrivateKey(true);
+    } else if (pinAction === 'mnemonic') {
+      setShowMnemonic(true);
+    }
+    setPinAction(null);
+  };
+
   const copyToClipboard = async (text, label) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      showToast(`${label} copied!`, "success");
-    } catch (err) {
-      try {
-        const textArea = document.createElement("textarea");
-        textArea.value = text;
-        textArea.style.position = "fixed";
-        textArea.style.left = "-999999px";
-        document.body.appendChild(textArea);
-        textArea.focus();
-        textArea.select();
-        document.execCommand("copy");
-        document.body.removeChild(textArea);
+    // Require PIN to copy sensitive data
+    setPinAction('copy');
+    setShowPinModal(true);
+    
+    // Store the copy action for after PIN verification
+    window._pendingCopy = { text, label };
+  };
+
+  const handleCopyAfterPin = () => {
+    if (window._pendingCopy) {
+      const { text, label } = window._pendingCopy;
+      navigator.clipboard.writeText(text).then(() => {
         showToast(`${label} copied!`, "success");
-      } catch (fallbackErr) {
+      }).catch(() => {
         window.prompt(`Copy this ${label.toLowerCase()}:`, text);
-      }
+      });
+      window._pendingCopy = null;
+    }
+  };
+
+  const handlePinSuccessForCopy = () => {
+    if (pinAction === 'copy') {
+      handleCopyAfterPin();
+    } else {
+      handlePinSuccess();
     }
   };
 
@@ -1293,6 +1642,25 @@ function SettingsScreen() {
       </div>
 
       <div className="content px-6 py-4 overflow-auto pb-24">
+        {/* Security Section */}
+        <div className="mb-6">
+          <h3 className="text-white font-semibold mb-3 flex items-center gap-2">
+            <Shield className="w-5 h-5" />
+            Security
+          </h3>
+          <button
+            onClick={() => navigate("/reset-pin")}
+            className="w-full bg-gray-800 rounded-xl p-4 flex items-center justify-between mb-3"
+            data-testid="reset-pin-btn"
+          >
+            <div className="flex items-center gap-3">
+              <Key className="w-5 h-5 text-purple-500" />
+              <span className="text-white">Reset PIN</span>
+            </div>
+            <ArrowLeft className="w-5 h-5 text-gray-400 rotate-180" />
+          </button>
+        </div>
+
         {/* Multi-Wallet Section */}
         <div className="mb-6">
           <div className="flex justify-between items-center mb-3">
@@ -1320,7 +1688,6 @@ function SettingsScreen() {
             </div>
           </div>
           
-          {/* Wallet List */}
           <div className="bg-gray-800 rounded-xl overflow-hidden">
             {wallets.map((w, index) => (
               <button
@@ -1357,7 +1724,10 @@ function SettingsScreen() {
             <div className="flex justify-between items-center mb-2">
               <span className="text-gray-400 text-sm">Address</span>
               <button 
-                onClick={() => copyToClipboard(wallet?.address, "Address")}
+                onClick={() => {
+                  navigator.clipboard.writeText(wallet?.address);
+                  showToast("Address copied!", "success");
+                }}
                 className="text-purple-500 text-sm flex items-center gap-1"
               >
                 <Copy className="w-4 h-4" /> Copy
@@ -1373,15 +1743,18 @@ function SettingsScreen() {
           <div className="mb-6">
             <div className="bg-gray-800 rounded-xl p-4">
               <div className="flex justify-between items-center mb-2">
-                <span className="text-gray-400 text-sm">Private Key</span>
+                <span className="text-gray-400 text-sm flex items-center gap-2">
+                  <Lock className="w-4 h-4" /> Private Key
+                </span>
                 <div className="flex gap-2">
-                  <button onClick={() => setShowPrivateKey(!showPrivateKey)} className="text-purple-500 text-sm">
+                  <button onClick={handleViewPrivateKey} className="text-purple-500 text-sm" data-testid="toggle-private-key">
                     {showPrivateKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
                   {showPrivateKey && (
                     <button 
                       onClick={() => copyToClipboard(wallet.privateKey, "Private Key")}
                       className="text-purple-500"
+                      data-testid="copy-private-key"
                     >
                       <Copy className="w-4 h-4" />
                     </button>
@@ -1391,6 +1764,11 @@ function SettingsScreen() {
               <p className={`text-white font-mono text-sm break-all ${!showPrivateKey && "blur-sm select-none"}`}>
                 {wallet.privateKey}
               </p>
+              {!showPrivateKey && (
+                <p className="text-yellow-500 text-xs mt-2 flex items-center gap-1">
+                  <Lock className="w-3 h-3" /> PIN required to view
+                </p>
+              )}
             </div>
           </div>
         )}
@@ -1399,15 +1777,18 @@ function SettingsScreen() {
           <div className="mb-6">
             <div className="bg-gray-800 rounded-xl p-4">
               <div className="flex justify-between items-center mb-2">
-                <span className="text-gray-400 text-sm">Recovery Phrase</span>
+                <span className="text-gray-400 text-sm flex items-center gap-2">
+                  <Lock className="w-4 h-4" /> Recovery Phrase
+                </span>
                 <div className="flex gap-2">
-                  <button onClick={() => setShowMnemonic(!showMnemonic)} className="text-purple-500 text-sm">
+                  <button onClick={handleViewMnemonic} className="text-purple-500 text-sm" data-testid="toggle-mnemonic">
                     {showMnemonic ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
                   {showMnemonic && (
                     <button 
                       onClick={() => copyToClipboard(wallet.mnemonic, "Recovery Phrase")}
                       className="text-purple-500"
+                      data-testid="copy-mnemonic"
                     >
                       <Copy className="w-4 h-4" />
                     </button>
@@ -1417,6 +1798,11 @@ function SettingsScreen() {
               <p className={`text-white font-mono text-sm break-all ${!showMnemonic && "blur-sm select-none"}`}>
                 {wallet.mnemonic}
               </p>
+              {!showMnemonic && (
+                <p className="text-yellow-500 text-xs mt-2 flex items-center gap-1">
+                  <Lock className="w-3 h-3" /> PIN required to view
+                </p>
+              )}
             </div>
           </div>
         )}
@@ -1441,58 +1827,392 @@ function SettingsScreen() {
       </div>
 
       <BottomNav active="settings" />
+
+      <PinVerifyModal
+        isOpen={showPinModal}
+        onClose={() => setShowPinModal(false)}
+        onSuccess={handlePinSuccessForCopy}
+        title="Security Verification"
+      />
     </div>
   );
 }
 
-// Browser Screen
+// DApp Browser Screen with WalletConnect
 function BrowserScreen() {
   const navigate = useNavigate();
-  const [url, setUrl] = useState("https://bccscan.com");
+  const { getCurrentWallet, currentChainId, wcSessions, setWcPendingProposal, setWcPendingRequest, addWcSession, removeWcSession } = useWalletStore();
+  const wallet = getCurrentWallet();
+  const [url, setUrl] = useState("");
+  const [wcUri, setWcUri] = useState("");
+  const [connecting, setConnecting] = useState(false);
+  const [sessions, setSessions] = useState([]);
+  const [showConnectModal, setShowConnectModal] = useState(false);
+  const [pendingProposal, setPendingProposal] = useState(null);
+  const [pendingRequest, setPendingRequest] = useState(null);
+  const [showRequestModal, setShowRequestModal] = useState(false);
+  const { showToast } = useToast();
+
+  const currentChain = CHAINS.find((c) => c.chainId === currentChainId) || CHAINS[0];
+
+  // Initialize WalletConnect
+  useEffect(() => {
+    const initWC = async () => {
+      try {
+        const wc = await WalletConnectService.init();
+        
+        // Listen for session proposals
+        wc.on('session_proposal', async (proposal) => {
+          console.log('Session proposal:', proposal);
+          setPendingProposal(proposal);
+          setShowConnectModal(true);
+        });
+
+        // Listen for session requests
+        wc.on('session_request', async (request) => {
+          console.log('Session request:', request);
+          setPendingRequest(request);
+          setShowRequestModal(true);
+        });
+
+        // Listen for session deletions
+        wc.on('session_delete', (data) => {
+          console.log('Session deleted:', data);
+          removeWcSession(data.topic);
+          loadSessions();
+          showToast('Session disconnected', 'info');
+        });
+
+        loadSessions();
+      } catch (error) {
+        console.error('WC init error:', error);
+      }
+    };
+
+    initWC();
+  }, []);
+
+  const loadSessions = () => {
+    const activeSessions = WalletConnectService.getActiveSessions();
+    setSessions(Object.values(activeSessions));
+  };
+
+  const handleConnect = async () => {
+    if (!wcUri.trim()) {
+      showToast('Please enter a WalletConnect URI', 'error');
+      return;
+    }
+
+    setConnecting(true);
+    try {
+      await WalletConnectService.pair(wcUri);
+      setWcUri('');
+      showToast('Pairing initiated...', 'success');
+    } catch (error) {
+      console.error('Connect error:', error);
+      showToast('Failed to connect: ' + error.message, 'error');
+    } finally {
+      setConnecting(false);
+    }
+  };
+
+  const handleApproveSession = async () => {
+    if (!pendingProposal || !wallet) return;
+
+    try {
+      const chainIds = CHAINS.map(c => c.chainId);
+      const session = await WalletConnectService.approveSession(pendingProposal, wallet.address, chainIds);
+      addWcSession(session);
+      loadSessions();
+      showToast('Connected to dApp!', 'success');
+    } catch (error) {
+      console.error('Approve error:', error);
+      showToast('Failed to approve: ' + error.message, 'error');
+    } finally {
+      setPendingProposal(null);
+      setShowConnectModal(false);
+    }
+  };
+
+  const handleRejectSession = async () => {
+    if (!pendingProposal) return;
+
+    try {
+      await WalletConnectService.rejectSession(pendingProposal);
+    } catch (error) {
+      console.error('Reject error:', error);
+    } finally {
+      setPendingProposal(null);
+      setShowConnectModal(false);
+    }
+  };
+
+  const handleApproveRequest = async () => {
+    if (!pendingRequest || !wallet) return;
+
+    try {
+      await WalletConnectService.handleRequest(pendingRequest, wallet, currentChain.rpcUrl);
+      showToast('Request approved!', 'success');
+    } catch (error) {
+      console.error('Request error:', error);
+      showToast('Request failed: ' + error.message, 'error');
+    } finally {
+      setPendingRequest(null);
+      setShowRequestModal(false);
+    }
+  };
+
+  const handleRejectRequest = async () => {
+    if (!pendingRequest) return;
+
+    try {
+      await WalletConnectService.rejectRequest(pendingRequest);
+      showToast('Request rejected', 'info');
+    } catch (error) {
+      console.error('Reject error:', error);
+    } finally {
+      setPendingRequest(null);
+      setShowRequestModal(false);
+    }
+  };
+
+  const handleDisconnect = async (topic) => {
+    try {
+      await WalletConnectService.disconnectSession(topic);
+      removeWcSession(topic);
+      loadSessions();
+      showToast('Disconnected', 'success');
+    } catch (error) {
+      console.error('Disconnect error:', error);
+    }
+  };
+
+  const getRequestDetails = (request) => {
+    if (!request) return { method: '', params: '' };
+    const { params } = request;
+    const { request: req } = params;
+    return {
+      method: req.method,
+      params: JSON.stringify(req.params, null, 2).slice(0, 200) + '...',
+    };
+  };
 
   return (
     <div className="screen-container" data-testid="browser-screen">
       <div className="header">
-        <span className="header-title">Browser</span>
+        <span className="header-title">DApp Browser</span>
       </div>
 
-      <div className="px-4 py-2">
-        <input
-          className="input-field w-full"
-          placeholder="Enter URL..."
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          onKeyPress={(e) => e.key === "Enter" && window.open(url, "_blank")}
-        />
-      </div>
-
-      <div className="flex-1 px-4 py-4">
-        <h3 className="text-white font-semibold mb-4">Quick Links</h3>
-        <div className="grid grid-cols-2 gap-4">
-          {[
-            { name: "BCCScan", url: "https://bccscan.com" },
-            { name: "Etherscan", url: "https://etherscan.io" },
-            { name: "PolygonScan", url: "https://polygonscan.com" },
-            { name: "BscScan", url: "https://bscscan.com" },
-          ].map((link) => (
+      <div className="content px-4 py-4 overflow-auto pb-24">
+        {/* WalletConnect Section */}
+        <div className="mb-6">
+          <h3 className="text-white font-semibold mb-3 flex items-center gap-2">
+            <Link2 className="w-5 h-5 text-purple-500" />
+            WalletConnect
+          </h3>
+          
+          <div className="bg-gray-800 rounded-xl p-4 mb-4">
+            <p className="text-gray-400 text-sm mb-3">
+              Paste WalletConnect URI to connect to a dApp
+            </p>
+            <input
+              className="input-field w-full mb-3"
+              placeholder="wc:..."
+              value={wcUri}
+              onChange={(e) => setWcUri(e.target.value)}
+              data-testid="wc-uri-input"
+            />
             <button
-              key={link.name}
-              className="bg-gray-800 p-4 rounded-xl text-left"
-              onClick={() => window.open(link.url, "_blank")}
+              className="btn-primary w-full"
+              onClick={handleConnect}
+              disabled={connecting || !wcUri.trim()}
+              data-testid="wc-connect-btn"
             >
-              <Globe className="w-6 h-6 text-purple-500 mb-2" />
-              <p className="text-white font-medium">{link.name}</p>
+              {connecting ? (
+                <>
+                  <RefreshCw className="w-5 h-5 animate-spin mr-2" />
+                  Connecting...
+                </>
+              ) : (
+                <>
+                  <Link2 className="w-5 h-5 mr-2" />
+                  Connect
+                </>
+              )}
             </button>
-          ))}
+          </div>
+
+          {/* Active Sessions */}
+          {sessions.length > 0 && (
+            <div className="mb-4">
+              <h4 className="text-gray-400 text-sm mb-2">Active Connections</h4>
+              {sessions.map((session) => (
+                <div key={session.topic} className="bg-gray-800 rounded-xl p-4 mb-2 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    {session.peer?.metadata?.icons?.[0] && (
+                      <img 
+                        src={session.peer.metadata.icons[0]} 
+                        alt="" 
+                        className="w-10 h-10 rounded-full"
+                        onError={(e) => { e.target.style.display = 'none'; }}
+                      />
+                    )}
+                    <div>
+                      <p className="text-white font-medium">{session.peer?.metadata?.name || 'Unknown dApp'}</p>
+                      <p className="text-gray-400 text-xs">{session.peer?.metadata?.url || ''}</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => handleDisconnect(session.topic)}
+                    className="text-red-500 p-2 hover:bg-gray-700 rounded-lg"
+                    data-testid={`disconnect-${session.topic}`}
+                  >
+                    <Unlink className="w-5 h-5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Quick Links */}
+        <div className="mb-6">
+          <h3 className="text-white font-semibold mb-3 flex items-center gap-2">
+            <Globe className="w-5 h-5" />
+            Quick Links
+          </h3>
+          <div className="grid grid-cols-2 gap-4">
+            {[
+              { name: "BCCScan", url: "https://bccscan.com" },
+              { name: "Etherscan", url: "https://etherscan.io" },
+              { name: "PolygonScan", url: "https://polygonscan.com" },
+              { name: "BscScan", url: "https://bscscan.com" },
+              { name: "Uniswap", url: "https://app.uniswap.org" },
+              { name: "OpenSea", url: "https://opensea.io" },
+            ].map((link) => (
+              <button
+                key={link.name}
+                className="bg-gray-800 p-4 rounded-xl text-left hover:bg-gray-700 transition-colors"
+                onClick={() => window.open(link.url, "_blank")}
+              >
+                <ExternalLink className="w-5 h-5 text-purple-500 mb-2" />
+                <p className="text-white font-medium text-sm">{link.name}</p>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* URL Input */}
+        <div className="mb-6">
+          <h3 className="text-white font-semibold mb-3">Open URL</h3>
+          <div className="flex gap-2">
+            <input
+              className="input-field flex-1"
+              placeholder="Enter URL..."
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              onKeyPress={(e) => e.key === "Enter" && url && window.open(url.startsWith('http') ? url : `https://${url}`, "_blank")}
+            />
+            <button
+              className="btn-icon bg-purple-600"
+              onClick={() => url && window.open(url.startsWith('http') ? url : `https://${url}`, "_blank")}
+              disabled={!url}
+            >
+              <ExternalLink className="w-5 h-5" />
+            </button>
+          </div>
         </div>
       </div>
 
       <BottomNav active="browser" />
+
+      {/* Session Proposal Modal */}
+      {showConnectModal && pendingProposal && (
+        <div className="modal-overlay" data-testid="wc-connect-modal">
+          <div className="modal-content">
+            <div className="flex flex-col items-center py-6">
+              <div className="w-16 h-16 bg-purple-600 rounded-full flex items-center justify-center mb-4">
+                <Link2 className="w-8 h-8 text-white" />
+              </div>
+              <h2 className="text-xl font-bold text-white mb-2">Connection Request</h2>
+              <p className="text-gray-400 text-center mb-4">
+                {pendingProposal.params?.proposer?.metadata?.name || 'A dApp'} wants to connect to your wallet
+              </p>
+              {pendingProposal.params?.proposer?.metadata?.url && (
+                <p className="text-purple-400 text-sm mb-4">
+                  {pendingProposal.params.proposer.metadata.url}
+                </p>
+              )}
+              <div className="bg-gray-800 rounded-xl p-4 w-full mb-4">
+                <p className="text-gray-400 text-sm mb-1">Wallet Address</p>
+                <p className="text-white font-mono text-sm break-all">
+                  {wallet?.address}
+                </p>
+              </div>
+              <div className="flex gap-3 w-full">
+                <button
+                  className="btn-secondary flex-1"
+                  onClick={handleRejectSession}
+                  data-testid="wc-reject-btn"
+                >
+                  Reject
+                </button>
+                <button
+                  className="btn-primary flex-1"
+                  onClick={handleApproveSession}
+                  data-testid="wc-approve-btn"
+                >
+                  Connect
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Request Modal */}
+      {showRequestModal && pendingRequest && (
+        <div className="modal-overlay" data-testid="wc-request-modal">
+          <div className="modal-content">
+            <div className="flex flex-col items-center py-6">
+              <div className="w-16 h-16 bg-yellow-600 rounded-full flex items-center justify-center mb-4">
+                <AlertTriangle className="w-8 h-8 text-white" />
+              </div>
+              <h2 className="text-xl font-bold text-white mb-2">Sign Request</h2>
+              <p className="text-gray-400 text-center mb-4">
+                A dApp is requesting you to sign:
+              </p>
+              <div className="bg-gray-800 rounded-xl p-4 w-full mb-4">
+                <p className="text-purple-400 text-sm mb-1">{getRequestDetails(pendingRequest).method}</p>
+                <p className="text-gray-400 text-xs font-mono break-all">
+                  {getRequestDetails(pendingRequest).params}
+                </p>
+              </div>
+              <div className="flex gap-3 w-full">
+                <button
+                  className="btn-secondary flex-1"
+                  onClick={handleRejectRequest}
+                  data-testid="wc-reject-request-btn"
+                >
+                  Reject
+                </button>
+                <button
+                  className="btn-primary flex-1"
+                  onClick={handleApproveRequest}
+                  data-testid="wc-approve-request-btn"
+                >
+                  Approve
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-// Bottom Navigation - FIXED HEIGHT
+// Bottom Navigation
 function BottomNav({ active }) {
   const navigate = useNavigate();
 
@@ -1544,6 +2264,7 @@ function App() {
             <Route path="/settings" element={<SettingsScreen />} />
             <Route path="/browser" element={<BrowserScreen />} />
             <Route path="/scan" element={<QRScannerScreen />} />
+            <Route path="/reset-pin" element={<ResetPinScreen />} />
           </Routes>
         </div>
       </ToastProvider>
