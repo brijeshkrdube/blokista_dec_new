@@ -700,8 +700,7 @@ function HomeScreen() {
     return () => {
       isMounted = false;
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wallet?.address, currentChainId, tokens.length]);
+  }, [wallet?.address, currentChainId, tokens.length]); // Only re-fetch when these change
 
   const { showToast } = useToast();
 
